@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowDown, ArrowUpRight, Check, ChevronDown, ChevronRight, CircleHelp, FilePlus2, FileText, MoreHorizontal, Plus, RefreshCw, Search, Settings2, Sparkles, Table2, X } from 'lucide-react';
-import { getBitableRecords, loadBitableContext, loadPluginConfig, savePluginConfig, selectBitableRecords, type BitableContext, type BitableRecord } from './bitable';
+import type { Selection } from '@lark-base-open/js-sdk';
+import { getBitableRecords, loadBitableContext, loadPluginConfig, onSelectionChange, savePluginConfig, selectBitableRecords, type BitableContext, type BitableRecord } from './bitable';
 
 const fields = ['客户名称', '客户统一社会信用代码', '合同编号', '合同金额', '签订日期', '联系人', '联系电话', '收货地址'];
 const sampleRecord: Record<string, string> = {
@@ -28,23 +29,37 @@ export default function App() {
   }, [actualRecords, query]);
   useEffect(() => {
     let active = true;
+    let requestId = 0;
     const timeout = window.setTimeout(() => { if (active) setConnected(false); }, 4000);
-    loadBitableContext().then(async (value) => {
-      if (!active) return;
-      window.clearTimeout(timeout);
-      setContext(value);
-      setConnected(true);
-      setSelectedRecordIds(value.selectedRecordIds);
-      const savedBindings = await loadPluginConfig<Record<string, string>>();
-      if (active && savedBindings) setBindings((current) => ({ ...current, ...savedBindings }));
-      const selectedRecord = value.records.find((record) => record.recordId === value.selectedRecordIds[0]) ?? value.records[0];
-      if (selectedRecord) {
-        const primary = value.fields.find(({ id }) => id in selectedRecord.fields);
-        const primaryValue = primary ? selectedRecord.fields[primary.id] : undefined;
-        if (primaryValue != null) setSelected(String(primaryValue));
+    const syncContext = async (selection?: Selection, restoreBindings = false) => {
+      const currentRequest = ++requestId;
+      try {
+        const value = await loadBitableContext(selection);
+        if (!active || currentRequest !== requestId) return;
+        window.clearTimeout(timeout);
+        setContext(value);
+        setConnected(true);
+        setSelectedRecordIds(value.selectedRecordIds);
+        if (restoreBindings) {
+          const savedBindings = await loadPluginConfig<Record<string, string>>();
+          if (!active || currentRequest !== requestId) return;
+          if (savedBindings) setBindings((current) => ({ ...current, ...savedBindings }));
+        }
+        const selectedRecord = value.records.find((record) => record.recordId === value.selectedRecordIds[0]) ?? value.records[0];
+        if (selectedRecord) {
+          const primary = value.fields.find(({ id }) => id in selectedRecord.fields);
+          const primaryValue = primary ? selectedRecord.fields[primary.id] : undefined;
+          if (primaryValue != null) setSelected(String(primaryValue));
+        }
+      } catch {
+        if (active && currentRequest === requestId) setConnected(false);
       }
-    }).catch(() => { if (active) setConnected(false); });
-    return () => { active = false; window.clearTimeout(timeout); };
+    };
+    const unsubscribe = onSelectionChange((selection) => {
+      if (selection.recordId) void syncContext(selection);
+    });
+    void syncContext(undefined, true);
+    return () => { active = false; unsubscribe(); window.clearTimeout(timeout); };
   }, []);
   const recordValue = (record: BitableRecord, fieldName: string) => {
     const field = context?.fields.find(({ name }) => name === fieldName);
@@ -125,7 +140,7 @@ export default function App() {
         <div className="page-heading"><div><div className="breadcrumb">模板配置 <ChevronRight size={12} /> 销售合同</div><h1>销售合同</h1><p>将文档中的变量绑定到多维表格字段，按记录生成合同。</p></div><button className="outline-button" onClick={() => setEditing(true)}><FileText size={15} /> 在飞书中编辑模板 <ArrowUpRight size={14} /></button></div>
         {notice && <div className="notice"><Check size={15} /> {notice}<button onClick={() => setNotice('')} aria-label="关闭"><X size={15} /></button></div>}
 
-        <div className="setup-strip"><div className="step done"><span><Check size={13} /></span><b>選择模板</b></div><div className="step-line" /><div className="step current"><span>2</span><b>绑定字段</b></div><div className="step-line" /><div className="step"><span>3</span><b>选择记录并生成</b></div><div className="strip-right"><button className="plain-button"><Table2 size={14} /> {context?.tableName ?? '合同记录'} <ChevronDown size={13} /></button></div></div>
+        <div className="setup-strip"><div className="step done"><span><Check size={13} /></span><b>選择模板</b></div><div className="step-line" /><div className="step current"><span>2</span><b>绑定字段</b></div><div className="step-line" /><div className="step"><span>3</span><b>{context?.isRecordDetail ? '当前记录' : '选择记录并生成'}</b></div><div className="strip-right"><button className="plain-button"><Table2 size={14} /> {context?.tableName ?? '合同记录'} <ChevronDown size={13} /></button></div></div>
 
         <div className="content-grid">
           <div className="mapping-column">
@@ -136,9 +151,9 @@ export default function App() {
               </div>
             </section>
 
-            <section className="section-block record-block"><div className="section-head"><div><h2>选择记录</h2><p>选择一条合同记录作为本次生成的数据来源。</p></div><span className="record-count">{connected ? `${context?.records.length ?? 0} 条记录` : '演示数据'}</span></div>
+            <section className="section-block record-block"><div className="section-head"><div><h2>{context?.isRecordDetail ? '当前记录' : '选择记录'}</h2><p>{context?.isRecordDetail ? '将使用当前详情页记录填充文档。' : '选择一条合同记录作为本次生成的数据来源。'}</p></div><span className="record-count">{connected ? `${context?.records.length ?? 0} 条记录` : '演示数据'}</span></div>
               <div className="record-tools"><label className="search-box"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索客户或合同编号" /></label><button className="filter-button"><span className="filter-dot" /> 全部状态 <ChevronDown size={13} /></button></div>
-              {connected && <button className="text-button record-picker" onClick={() => void chooseRecords()}><Check size={14} /> 从当前表格选择记录{selectedRecordIds.length ? `（已选 ${selectedRecordIds.length} 条）` : ''}</button>}
+              {connected && !context?.isRecordDetail && <button className="text-button record-picker" onClick={() => void chooseRecords()}><Check size={14} /> 从当前表格选择记录{selectedRecordIds.length ? `（已选 ${selectedRecordIds.length} 条）` : ''}</button>}
               <div className="records">{connected && visibleRecords.length ? visibleRecords.slice(0, 3).map((record, index) => { const name = recordValue(record, bindings['客户名称'] || actualFields[0]) || `记录 ${index + 1}`; return <button key={record.recordId} onClick={() => { setSelected(name); setGenerated(false); }} className={`record-option ${selected === name ? 'selected' : ''}`}><span className="radio" /><span className="record-primary"><b>{name}</b><small>{record.recordId}</small></span></button>; }) : <><button onClick={() => { setSelected('上海澄海医药有限公司'); setGenerated(false); }} className={`record-option ${selected === '上海澄海医药有限公司' ? 'selected' : ''}`}><span className="radio" /> <span className="record-primary"><b>上海澄海医药有限公司</b><small>PC-2026-1028　·　¥286,000</small></span><span className="record-date">2026/10/19</span></button><button onClick={() => { setSelected('杭州景明生物科技'); setGenerated(false); }} className={`record-option ${selected === '杭州景明生物科技' ? 'selected' : ''}`}><span className="radio" /> <span className="record-primary"><b>杭州景明生物科技</b><small>PC-2026-1022　·　¥152,400</small></span><span className="record-date">2026/10/17</span></button><button onClick={() => { setSelected('苏州安和医疗'); setGenerated(false); }} className={`record-option ${selected === '苏州安和医疗' ? 'selected' : ''}`}><span className="radio" /> <span className="record-primary"><b>苏州安和医疗</b><small>PC-2026-1016　·　¥98,000</small></span><span className="record-date">2026/10/16</span></button></>}</div>
             </section>
           </div>

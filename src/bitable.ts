@@ -1,4 +1,4 @@
-import { bitable } from '@lark-base-open/js-sdk';
+import { bitable, type Selection } from '@lark-base-open/js-sdk';
 
 export type BitableField = { id: string; name: string };
 export type BitableRecord = { recordId: string; fields: Record<string, unknown> };
@@ -7,13 +7,17 @@ export type BitableContext = {
   tableName: string;
   tableId: string;
   viewId: string | null;
+  isRecordDetail: boolean;
   selectedRecordIds: string[];
   fields: BitableField[];
   records: BitableRecord[];
 };
 
-export async function loadBitableContext(): Promise<BitableContext> {
-  const [selection, baseName] = await Promise.all([bitable.base.getSelection(), bitable.base.getBaseName()]);
+export async function loadBitableContext(selectionOverride?: Selection): Promise<BitableContext> {
+  const [selection, baseName] = await Promise.all([
+    selectionOverride ? Promise.resolve(selectionOverride) : bitable.base.getSelection(),
+    bitable.base.getBaseName(),
+  ]);
   const table = selection.tableId
     ? await bitable.base.getTableById(selection.tableId)
     : await bitable.base.getActiveTable();
@@ -33,10 +37,15 @@ export async function loadBitableContext(): Promise<BitableContext> {
     tableName: tableMeta.name,
     tableId: tableMeta.id,
     viewId: viewMeta.id,
+    isRecordDetail: Boolean(selection.recordId),
     selectedRecordIds,
     fields: fieldMeta.map(({ id, name }) => ({ id, name })),
     records,
   };
+}
+
+export function onSelectionChange(callback: (selection: Selection) => void): () => void {
+  return bitable.base.onSelectionChange(({ data }) => callback(data));
 }
 
 const CONFIG_KEY = 'pharmcube-document-generator-config';
